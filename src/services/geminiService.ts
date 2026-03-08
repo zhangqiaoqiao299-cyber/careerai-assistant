@@ -4,9 +4,14 @@ import { AnalysisResult, ChatMessage, JDData, ResumeData } from "../types";
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 async function callDeepSeek(prompt: string) {
-  const apiKey = import.meta.env.VITE_DEEPSEEK_API_KEY;
+  // 兼容性读取：尝试多种可能的路径获取 API Key
+  const apiKey = 
+    import.meta.env.VITE_DEEPSEEK_API_KEY || 
+    (process.env as any).VITE_DEEPSEEK_API_KEY || 
+    (process.env as any).DEEPSEEK_API_KEY;
+
   if (!apiKey) {
-    throw new Error("未配置 VITE_DEEPSEEK_API_KEY，请在 Netlify 后台设置（记得加上 VITE_ 前缀）。");
+    throw new Error("未检测到 DeepSeek API Key。请确保在 Netlify 环境变量中设置了 VITE_DEEPSEEK_API_KEY，并重新部署（Clear cache and deploy）。");
   }
 
   const response = await fetch("https://api.deepseek.com/chat/completions", {
