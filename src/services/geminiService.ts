@@ -73,22 +73,39 @@ export async function analyzeJobMatch(resume: ResumeData, jd: JDData): Promise<A
     
     searchResultsText = searchResponse.text || "";
     
-    // 提取结构化链接
-    const chunks = searchResponse.candidates?.[0]?.groundingMetadata?.groundingChunks;
+    // --- 三重保险提取链接 ---
+    
+    // 1. 提取官方结构化链接 (Grounding Chunks)
+    const metadata = searchResponse.candidates?.[0]?.groundingMetadata;
+    const chunks = metadata?.groundingChunks;
     groundingUrls = chunks?.map(c => ({
       title: c.web?.title || "参考资料",
       uri: c.web?.uri || ""
     })).filter(u => u.uri) || [];
 
-    // 如果 Gemini 没返回 chunks，尝试从文本中简单匹配（备选方案）
+    // 2. 如果官方数据为空，从搜索文本中正则匹配网址
     if (groundingUrls.length === 0) {
-      const urlRegex = /(https?:\/\/[^\s]+)/g;
+      const urlRegex = /https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)/g;
       const matches = searchResultsText.match(urlRegex);
       if (matches) {
-        groundingUrls = matches.slice(0, 5).map(url => ({
+        // 去重并限制数量
+        const uniqueUrls = Array.from(new Set(matches));
+        groundingUrls = uniqueUrls.slice(0, 5).map(url => ({
           title: "相关资讯链接",
-          uri: url.replace(/[).,;]$/, '')
+          uri: url.replace(/[).,;]$/, '') // 清理末尾标点
         }));
+      }
+    }
+
+    // 3. 保底方案：如果还是没有，尝试提取 Google 搜索入口
+    if (groundingUrls.length === 0 && metadata?.searchEntryPoint?.htmlContent) {
+      // 尝试从 Google 提供的 HTML 片段中提取搜索链接
+      const hrefMatch = metadata.searchEntryPoint.htmlContent.match(/href="([^"]+)"/);
+      if (hrefMatch) {
+        groundingUrls.push({
+          title: `在 Google 上搜索 ${jd.companyName}`,
+          uri: hrefMatch[1]
+        });
       }
     }
   } catch (error) {
