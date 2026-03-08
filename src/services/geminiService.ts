@@ -4,7 +4,7 @@ import { AnalysisResult, ChatMessage, JDData, ResumeData } from "../types";
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 export async function analyzeJobMatch(resume: ResumeData, jd: JDData): Promise<AnalysisResult> {
-  const model = "gemini-3.1-pro-preview";
+  const model = "gemini-3-flash-preview";
   
   const prompt = `
     你是一个资深的职业顾问和面试官。请根据以下简历和职位描述（JD）进行深度分析。
