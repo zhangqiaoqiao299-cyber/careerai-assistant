@@ -1,0 +1,7 @@
+{
+  "name": "CareerAI - 智能求职助手",
+  "description": "一站式智能求职助手：简历优化、公司调研、定制面试题及模拟面试。",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
