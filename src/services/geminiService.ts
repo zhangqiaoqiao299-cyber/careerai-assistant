@@ -3,71 +3,148 @@ import { AnalysisResult, ChatMessage, JDData, ResumeData } from "../types";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
-export async function analyzeJobMatch(resume: ResumeData, jd: JDData): Promise<AnalysisResult> {
-  const model = "gemini-3-flash-preview";
-  
-  const prompt = `
-    你是一个资深的职业顾问和面试官。请根据以下简历和职位描述（JD）进行深度分析。
-    
-    简历内容:
-    ${resume.text}
-    
-    职位描述 (JD):
-    ${jd.text}
-    目标公司: ${jd.companyName}
+async function callDeepSeek(prompt: string) {
+  const apiKey = import.meta.env.VITE_DEEPSEEK_API_KEY;
+  if (!apiKey) {
+    throw new Error("未配置 VITE_DEEPSEEK_API_KEY，请在 Netlify 后台设置（记得加上 VITE_ 前缀）。");
+  }
 
-    请提供以下三个部分的详细分析（使用Markdown格式，确保有清晰的标题）：
-    1. **简历优化建议**：对比简历和JD，指出简历中缺失的关键技能或经验，并给出具体的修改建议。
-    2. **定制面试题**：基于JD要求和简历背景，生成5-8道针对性的面试题（包含技术题和行为面试题），并附带简要的回答要点。
-    3. **公司背景调研**：简要介绍 ${jd.companyName} 的业务、文化和近期动态。
-    
-    注意：如果由于信息不足无法进行深度调研，请根据JD推测该公司可能关注的核心能力。
-  `;
+  const response = await fetch("https://api.deepseek.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: "deepseek-chat",
+      messages: [
+        {
+          role: "system",
+          content: `你是一个极其严谨、客观且专业的职业顾问。
+          当前系统时间：2026-03-08。
+          你的原则：
+          1. 零幻觉：严禁编造任何简历中不存在的经历。
+          2. 零夸大：严禁使用虚假的修饰词。
+          3. 零谄媚：保持中立专业的口吻，不进行无意义的赞美。
+          4. 事实驱动：所有的建议和面试题必须锚定在原始文本中。`
+        },
+        { role: "user", content: prompt }
+      ],
+      temperature: 0.3, // 降低随机性，增加严谨性
+      stream: false
+    })
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(`DeepSeek API 错误: ${error.error?.message || response.statusText}`);
+  }
+
+  const data = await response.json();
+  return data.choices[0].message.content;
+}
+
+export async function analyzeJobMatch(resume: ResumeData, jd: JDData): Promise<AnalysisResult> {
+  const geminiModel = "gemini-3-flash-preview";
+  
+  // 第一步：利用 Gemini 的搜索能力获取公司背景
+  let searchResultsText = "";
+  let groundingUrls: { title: string; uri: string }[] = [];
 
   try {
-    const response = await ai.models.generateContent({
-      model,
-      contents: prompt,
+    const searchResponse = await ai.models.generateContent({
+      model: geminiModel,
+      contents: `请深入搜索并调研公司 ${jd.companyName}。
+      重点关注：
+      1. 官方网站及业务介绍。
+      2. 最近一年的重大新闻、融资动态或财报。
+      3. 企业文化与核心价值观。
+      4. 社交媒体（如领英、知乎、脉脉）上的员工评价摘要。
+      JD内容参考：${jd.text}`,
       config: {
-        // 尝试使用搜索，但如果失败也要能返回结果
         tools: [{ googleSearch: {} }],
       },
     });
-
-    const text = response.text || "";
     
-    if (!text) {
-      throw new Error("AI 返回了空内容");
-    }
-
-    const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
-    const groundingUrls = chunks?.map(c => ({
-      title: c.web?.title || "参考链接",
+    searchResultsText = searchResponse.text || "";
+    
+    // 提取结构化链接
+    const chunks = searchResponse.candidates?.[0]?.groundingMetadata?.groundingChunks;
+    groundingUrls = chunks?.map(c => ({
+      title: c.web?.title || "参考资料",
       uri: c.web?.uri || ""
     })).filter(u => u.uri) || [];
 
+    // 如果 Gemini 没返回 chunks，尝试从文本中简单匹配（备选方案）
+    if (groundingUrls.length === 0) {
+      const urlRegex = /(https?:\/\/[^\s]+)/g;
+      const matches = searchResultsText.match(urlRegex);
+      if (matches) {
+        groundingUrls = matches.slice(0, 5).map(url => ({
+          title: "相关资讯链接",
+          uri: url.replace(/[).,;]$/, '')
+        }));
+      }
+    }
+  } catch (error) {
+    console.warn("Gemini 搜索失败，将仅依赖已有信息进行分析", error);
+  }
+
+  // 第二步：将所有信息汇总，交给 DeepSeek 进行深度逻辑分析
+  const deepSeekPrompt = `
+    请根据以下信息进行深度职场匹配分析。
+    当前日期：2026-03-08。
+
+    ### 候选人简历原文：
+    ${resume.text}
+    
+    ### 目标职位描述 (JD)：
+    ${jd.text}
+    目标公司：${jd.companyName}
+
+    ### 联网搜索到的公司背景资料：
+    ${searchResultsText}
+
+    ### 任务要求：
+    请提供以下三个部分的详细分析（使用Markdown格式）：
+
+    1. **简历优化建议**：
+       - 对比简历与JD，指出简历中缺失的关键技能或经验。
+       - **严禁编造经历**。如果缺失，请建议候选人如何通过现有项目体现相关能力，或指出需要查漏补缺的方向。
+       - 给出具体的文字修改建议，保持专业、干练。
+
+    2. **定制面试题**：
+       - 基于JD要求和简历事实，生成5-8道针对性面试题。
+       - 包含技术深度挖掘题和行为面试题。
+       - 附带简要的回答要点，要点必须符合候选人的真实背景。
+
+    3. **公司背景与面试策略**：
+       - 结合搜索到的动态，分析该公司的面试偏好。
+       - 给出针对 ${jd.companyName} 的面试避坑指南。
+
+    注意：请保持冷峻、专业的分析风格，禁止任何形式的自我渲染或谄媚。
+  `;
+
+  try {
+    const deepSeekResult = await callDeepSeek(deepSeekPrompt);
     return {
-      optimization: text,
-      interviewQuestions: "", 
+      optimization: deepSeekResult,
+      interviewQuestions: "",
       companyInfo: "",
       groundingUrls
     };
   } catch (error: any) {
-    console.warn("Analysis with search failed, retrying without tools...", error);
-    // Fallback: try without tools if search fails (common in some regions or with some keys)
+    console.error("DeepSeek 分析失败，尝试降级到 Gemini", error);
+    // 降级逻辑：如果 DeepSeek 失败，回退到 Gemini
     const fallbackResponse = await ai.models.generateContent({
-      model,
-      contents: prompt,
+      model: geminiModel,
+      contents: deepSeekPrompt,
     });
-    
-    const text = fallbackResponse.text || "";
-    if (!text) throw new Error("AI 无法生成分析内容");
-
     return {
-      optimization: text,
+      optimization: fallbackResponse.text || "分析失败，请检查 API 配置。",
       interviewQuestions: "",
       companyInfo: "",
-      groundingUrls: []
+      groundingUrls
     };
   }
 }
