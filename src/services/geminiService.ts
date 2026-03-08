@@ -99,17 +99,39 @@ export async function analyzeJobMatch(resume: ResumeData, jd: JDData): Promise<A
 
     // 3. 保底方案：如果还是没有，尝试提取 Google 搜索入口
     if (groundingUrls.length === 0 && metadata?.searchEntryPoint?.htmlContent) {
-      // 尝试从 Google 提供的 HTML 片段中提取搜索链接
       const hrefMatch = metadata.searchEntryPoint.htmlContent.match(/href="([^"]+)"/);
       if (hrefMatch) {
         groundingUrls.push({
-          title: `在 Google 上搜索 ${jd.companyName}`,
+          title: `在 Google 上查看搜索结果`,
           uri: hrefMatch[1]
         });
       }
     }
   } catch (error) {
-    console.warn("Gemini 搜索失败，将仅依赖已有信息进行分析", error);
+    console.warn("Gemini 搜索失败，将使用保底链接", error);
+  }
+
+  // --- 终极保底：如果以上所有尝试都失败了，手动构造搜索链接 ---
+  if (groundingUrls.length === 0) {
+    const encodedCompany = encodeURIComponent(jd.companyName);
+    groundingUrls = [
+      {
+        title: `在 Google 搜索 ${jd.companyName} 背景`,
+        uri: `https://www.google.com/search?q=${encodedCompany}+公司背景+业务动态`
+      },
+      {
+        title: `在 百度 搜索 ${jd.companyName}`,
+        uri: `https://www.baidu.com/s?wd=${encodedCompany}`
+      },
+      {
+        title: `在 企查查/天眼查 调研公司`,
+        uri: `https://www.qcc.com/web/search?key=${encodedCompany}`
+      },
+      {
+        title: `在 LinkedIn 查看公司主页`,
+        uri: `https://www.linkedin.com/search/results/companies/?keywords=${encodedCompany}`
+      }
+    ];
   }
 
   // 第二步：将所有信息汇总，交给 DeepSeek 进行深度逻辑分析
@@ -176,58 +198,82 @@ export async function* streamMockInterview(
   resume: ResumeData,
   jd: JDData
 ) {
-  // Map our history to the format expected by the SDK
-  // We exclude the last message because we'll send it via sendMessageStream
-  const sdkHistory = history.slice(0, -1).map(msg => ({
-    role: msg.role,
-    parts: [{ text: msg.text }]
-  }));
+  const systemInstruction = `
+    你是一个极其严谨、专业的资深面试官。你正在为 ${jd.companyName} 的职位面试候选人。
+    当前系统时间：2026-03-08。
+    
+    ### 核心约束（最高优先级）：
+    1. **主动驱动**：每一轮对话你必须以一个明确的问题结束。如果用户回答了，你先简要评价（严禁谄媚，要客观），然后立刻抛出下一个问题。
+    2. **处理“下一题”**：如果用户说“下一题”、“跳过”或回答非常简略，不要纠缠，立刻根据JD和简历事实切换到下一个考察维度（技术、项目、或行为面试）。
+    3. **零幻觉原则**：严禁编造、杜撰、推测任何简历中未提及的信息。
+    4. **事实锚定**：你的每一个提问、每一个提到的项目名、数据点，必须在下方的“候选人简历”文本中找到原文依据。
+    5. **禁止沉默**：无论发生什么，你都必须保持对话。
 
-  const chat = ai.chats.create({
-    model: "gemini-3-flash-preview",
-    history: sdkHistory,
-    config: {
-      systemInstruction: `
-        你是一个极其严谨、专业的资深面试官。你正在为 ${jd.companyName} 的职位面试候选人。
-        
-        ### 核心约束（最高优先级）：
-        1. **零幻觉原则**：严禁编造、杜撰、推测任何简历中未提及的信息。
-        2. **事实锚定**：你的每一个提问、每一个提到的项目名、数据点，必须在下方的“候选人简历”文本中找到原文依据。
-        3. **禁止自由发挥**：禁止根据JD反向推导候选人“应该”有的经历。
+    ### 候选人简历原文：
+    ${resume.text}
+    
+    ### 职位描述 (JD)：
+    ${jd.text}
+    
+    ### 你的任务与执行规则：
+    1. **面试开场（第一个问题）**：
+       - 你必须先做一个简短的专业开场白，并明确邀请候选人进行自我介绍。
+    2. **对话模式**：
+       - 模拟真实的人与人交流模式。必须根据候选人的回答进行深度追问（Follow-up）。
+    3. **面试结束标志**：
+       - 当你决定结束面试时，直接且仅输出：“面试结束，谢谢您的配合”。
+  `;
 
-        ### 候选人简历原文：
-        ${resume.text}
-        
-        ### 职位描述 (JD)：
-        ${jd.text}
-        
-        ### 你的任务与执行规则：
-        1. **面试开场（第一个问题）**：
-           - 你必须先做一个简短的专业开场白，并**明确邀请候选人进行自我介绍**。这是面试的固定首个环节。
-        2. **对话模式（人机交流还原）**：
-           - 模拟真实的人与人交流模式。**严禁**生硬地罗列问题。
-           - **必须根据候选人的回答进行深度追问（Follow-up）**。针对候选人提到的细节、挑战或成果进行挖掘，使对话具有连贯性和逻辑性。
-        3. **问题数量控制**：
-           - 最少 5 轮对话，最多 10 轮对话。
-           - 表现好（回答专业且基于事实）5 轮左右结束；表现一般 8-10 轮结束。
-        4. **面试结束标志**：
-           - 当你决定结束面试时，在候选人最后一次回答后，**直接且仅输出**：“面试结束，谢谢您的配合”。
-           - **严禁**在结束语之前再提问，也**严禁**输出任何总结、评价或多余的客套话。
-        5. **提问风格**：
-           - 保持专业、严谨。
-           - 除了第一个问题外，后续对话应直接针对内容进行追问或转入新话题，避免重复性的“很好”、“收到”等无意义垫话，但要保持自然的对话流。
-        6. **严禁事项**：
-           - 禁止提到任何简历中没写的公司、项目名或具体数值。
+  try {
+    // 尝试使用 Gemini 引擎
+    const sdkHistory = history.slice(0, -1).map(msg => ({
+      role: msg.role,
+      parts: [{ text: msg.text }]
+    }));
 
-        请根据对话历史判断当前阶段。如果是对话开始，请请候选人做自我介绍。
-      `,
-    },
-  });
+    const chat = ai.chats.create({
+      model: "gemini-3-flash-preview",
+      history: sdkHistory,
+      config: { systemInstruction },
+    });
 
-  const lastMessage = history[history.length - 1]?.text || "你好，我准备好开始面试了。";
-  const result = await chat.sendMessageStream({ message: lastMessage });
+    const lastMessage = history[history.length - 1]?.text || "你好，我准备好开始面试了。";
+    const result = await chat.sendMessageStream({ message: lastMessage });
 
-  for await (const chunk of result) {
-    yield chunk.text;
+    for await (const chunk of result) {
+      yield chunk.text;
+    }
+  } catch (error: any) {
+    console.warn("Gemini 面试引擎故障，正在切换至 DeepSeek 备用引擎...", error);
+    
+    // 降级方案：使用 DeepSeek 进行面试
+    try {
+      const apiKey = import.meta.env.VITE_DEEPSEEK_API_KEY || (process.env as any).VITE_DEEPSEEK_API_KEY;
+      if (!apiKey) throw new Error("DeepSeek Key 缺失");
+
+      const response = await fetch("https://api.deepseek.com/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: "deepseek-chat",
+          messages: [
+            { role: "system", content: systemInstruction },
+            ...history.map(m => ({ role: m.role === "user" ? "user" : "assistant", content: m.text }))
+          ],
+          temperature: 0.7,
+          stream: false 
+        })
+      });
+
+      if (!response.ok) throw new Error("DeepSeek API 响应异常");
+      const data = await response.json();
+      yield data.choices[0].message.content;
+    } catch (deepError) {
+      console.error("双引擎均失效:", deepError);
+      yield "【系统提示】面试官网络连接出现波动，请稍等片刻并尝试再次发送消息。";
+    }
   }
 }
