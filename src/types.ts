@@ -1,6 +1,7 @@
+
 export interface ResumeData {
   text: string;
-  fileName?: string;
+  fileName: string;
 }
 
 export interface JDData {
