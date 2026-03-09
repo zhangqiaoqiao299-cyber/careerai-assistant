@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Building2, FileText, Send, Loader2, Sparkles, MessageSquare, ChevronRight, ArrowLeft, Settings, X } from "lucide-react";
+import { Building2, FileText, Send, Loader2, Sparkles, MessageSquare, ChevronRight, ArrowLeft, AlertCircle } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import Markdown from "react-markdown";
 import { Button } from "./components/Button";
@@ -7,7 +7,7 @@ import { ResumeUpload } from "./components/ResumeUpload";
 import { analyzeJobMatch, streamMockInterview } from "./services/geminiService";
 import { AnalysisResult, ChatMessage, JDData, ResumeData } from "./types";
 import { cn } from "./lib/utils";
-import { logUsage } from "./services/loggingService";
+import { logUsage, saveResume } from "./services/loggingService";
 
 export default function App() {
   const [step, setStep] = useState<"input" | "analysis" | "interview">("input");
@@ -18,28 +18,26 @@ export default function App() {
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   
-  // Config Modal State
-  const [showConfig, setShowConfig] = useState(false);
-  const [config, setConfig] = useState({
-    url: localStorage.getItem('supabase_url') || '',
-    key: localStorage.getItem('supabase_key') || ''
-  });
-
-  // 自动弹出逻辑：如果没有配置且不在生产环境（Netlify 环境变量），则自动弹出
+  // 自动从缓存加载简历
   useEffect(() => {
-    const hasEnv = import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY;
-    const hasLocal = localStorage.getItem('supabase_url') && localStorage.getItem('supabase_key');
-    
-    if (!hasEnv && !hasLocal) {
-      setShowConfig(true);
+    const cachedResume = localStorage.getItem('cached_resume');
+    if (cachedResume) {
+      try {
+        setResume(JSON.parse(cachedResume));
+      } catch (e) {
+        console.error("Failed to parse cached resume", e);
+      }
     }
   }, []);
 
-  const saveConfig = () => {
-    localStorage.setItem('supabase_url', config.url);
-    localStorage.setItem('supabase_key', config.key);
-    setShowConfig(false);
-    window.location.reload(); // 刷新以应用新配置
+  // 当简历更新时，存入缓存
+  const handleResumeUpload = (data: ResumeData | null) => {
+    setResume(data);
+    if (data) {
+      localStorage.setItem('cached_resume', JSON.stringify(data));
+    } else {
+      localStorage.removeItem('cached_resume');
+    }
   };
   
   // Interview state
@@ -143,6 +141,9 @@ export default function App() {
         resume_filename: resume.fileName,
         details: { jd_length: jd.text.length }
       });
+
+      // 存储简历到数据库
+      saveResume(resume, jd.companyName);
     } catch (error: any) {
       console.error("Analysis failed:", error);
       setAnalysisError(error.message || "分析失败，请检查网络连接或 API 密钥是否有效。");
@@ -215,63 +216,10 @@ export default function App() {
             <ChevronRight size={14} />
             <span className={cn(step === "interview" && "text-indigo-600")}>模拟面试</span>
           </div>
-
-          <button 
-            onClick={() => setShowConfig(true)}
-            className="p-2 hover:bg-slate-100 rounded-full text-slate-500 transition-colors"
-            title="配置数据库"
-          >
-            <Settings size={20} />
-          </button>
         </div>
       </header>
 
-      {/* Config Modal */}
-      <AnimatePresence>
-        {showConfig && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"
-            >
-              <div className="p-6 border-b border-slate-100 flex items-center justify-between">
-                <h2 className="text-xl font-bold text-slate-900">数据库配置 (Supabase)</h2>
-                <button onClick={() => setShowConfig(false)} className="text-slate-400 hover:text-slate-600">
-                  <X size={20} />
-                </button>
-              </div>
-              <div className="p-6 space-y-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-slate-700">Project URL</label>
-                  <input 
-                    type="text" 
-                    placeholder="https://xyz.supabase.co"
-                    className="w-full p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
-                    value={config.url}
-                    onChange={e => setConfig(prev => ({ ...prev, url: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-slate-700">Anon Key</label>
-                  <input 
-                    type="password" 
-                    placeholder="sb_publishable_..."
-                    className="w-full p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
-                    value={config.key}
-                    onChange={e => setConfig(prev => ({ ...prev, key: e.target.value }))}
-                  />
-                </div>
-                <div className="bg-amber-50 p-3 rounded-lg border border-amber-100 text-xs text-amber-700 leading-relaxed">
-                  提示：这些信息将保存在您的本地浏览器中。在 Netlify 部署时，请在后台设置对应的环境变量。
-                </div>
-                <Button onClick={saveConfig} className="w-full h-12">保存配置</Button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      {/* Config Modal Removed */}
 
       <main className="flex-1 max-w-5xl mx-auto w-full p-4 md:p-8">
         <AnimatePresence mode="wait">
@@ -289,7 +237,7 @@ export default function App() {
                     <FileText className="text-indigo-600" size={20} />
                     <h2>第一步：上传简历</h2>
                   </div>
-                  <ResumeUpload onUpload={setResume} />
+                  <ResumeUpload onUpload={handleResumeUpload} currentResume={resume} />
                 </section>
               </div>
 
@@ -360,7 +308,7 @@ export default function App() {
               ) : analysisError ? (
                 <div className="bg-white rounded-2xl border border-slate-200 p-12 flex flex-col items-center justify-center gap-6 text-center">
                   <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center text-red-500">
-                    <X size={32} />
+                    <AlertCircle size={32} />
                   </div>
                   <div className="space-y-2">
                     <h3 className="font-bold text-xl text-slate-900">分析失败</h3>
@@ -501,3 +449,5 @@ export default function App() {
     </div>
   );
 }
+
+
