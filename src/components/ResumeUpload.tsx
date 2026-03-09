@@ -5,14 +5,16 @@ import { Button } from "./Button";
 import { ResumeData } from "../types";
 
 interface ResumeUploadProps {
-  onUpload: (data: ResumeData) => void;
+  onUpload: (data: ResumeData | null) => void;
+  currentResume?: ResumeData | null;
 }
 
-export function ResumeUpload({ onUpload }: ResumeUploadProps) {
+export function ResumeUpload({ onUpload, currentResume }: ResumeUploadProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pastedText, setPastedText] = useState(currentResume?.fileName === "Pasted Text" ? currentResume.text : "");
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -58,6 +60,38 @@ export function ResumeUpload({ onUpload }: ResumeUploadProps) {
       setFile(null);
     }
   };
+
+  const clearResume = () => {
+    setFile(null);
+    setError(null);
+    setPastedText("");
+    onUpload(null);
+  };
+
+  if (currentResume && !error) {
+    return (
+      <div className="bg-white p-6 rounded-xl border border-indigo-100 shadow-sm space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-indigo-50 rounded-lg flex items-center justify-center text-indigo-600">
+              <FileText size={20} />
+            </div>
+            <div>
+              <p className="font-medium text-slate-900">{currentResume.fileName}</p>
+              <p className="text-xs text-slate-500">已从缓存加载上次使用的简历</p>
+            </div>
+          </div>
+          <Button variant="ghost" size="sm" onClick={clearResume} className="text-slate-400 hover:text-red-500">
+            <X size={18} />
+          </Button>
+        </div>
+        <div className="text-xs text-slate-400 bg-slate-50 p-3 rounded-lg line-clamp-3 italic">
+          "{currentResume.text.substring(0, 150)}..."
+        </div>
+        <p className="text-[10px] text-indigo-500 font-medium">提示：如需更新简历，请点击右上角关闭按钮重新上传</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -114,8 +148,18 @@ export function ResumeUpload({ onUpload }: ResumeUploadProps) {
       <textarea
         placeholder="为了获得最精准的面试体验，建议直接在此粘贴您的简历全文（包含个人信息、工作经历、项目描述等）..."
         className="w-full h-40 p-4 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none text-sm shadow-inner bg-white"
-        onChange={(e) => onUpload({ text: e.target.value, fileName: "Pasted Text" })}
+        value={pastedText}
+        onChange={(e) => {
+          const text = e.target.value;
+          setPastedText(text);
+          if (text.trim()) {
+            onUpload({ text, fileName: "Pasted Text" });
+          } else {
+            onUpload(null);
+          }
+        }}
       />
     </div>
   );
 }
+
